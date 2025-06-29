@@ -47,34 +47,47 @@ def predict_stock(ticker):
     mae = mean_absolute_error(y_test, test_pred)
     mape = np.mean(np.abs((y_test - test_pred) / y_test)) * 100
 
-    # 未来100日予測
+    # --- 未来100日予測 ---
     future_days = 100
     last_known_data = data_ind.iloc[-1][features].values.reshape(1, -1)
     future_preds = []
     future_dates = pd.date_range(start=data_ind.index[-1] + pd.Timedelta(days=1), periods=future_days)
 
     close_history = list(data_ind['Close'][-50:])
+    macd_history = list(data_ind['MACD'][-50:])  # MACD履歴も保持
 
     for _ in range(future_days):
+        # 予測値
         pred = model.predict(last_known_data)[0]
-        future_preds.append(pred)
 
+        # --- クリッピング：±20% ---
+        last_close = close_history[-1]
+        pred = max(min(pred, last_close * 1.2), last_close * 0.8)
+
+        future_preds.append(pred)
         close_history.append(pred)
         close_series = pd.Series(close_history[-50:])
 
+        # SMA
         sma_20 = close_series.rolling(window=20).mean().iloc[-1]
         sma_50 = close_series.rolling(window=50).mean().iloc[-1]
 
+        # RSI（EMAで計算）
         delta = close_series.diff()
-        gain = delta.where(delta > 0, 0).rolling(window=14).mean().iloc[-1]
-        loss = -delta.where(delta < 0, 0).rolling(window=14).mean().iloc[-1]
-        rs = gain / loss if loss != 0 else 0
-        rsi_14 = 100 - (100 / (1 + rs)) if loss != 0 else 100
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean().iloc[-1]
+        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean().iloc[-1]
+        rs = avg_gain / avg_loss if avg_loss != 0 else 0
+        rsi_14 = 100 - (100 / (1 + rs)) if avg_loss != 0 else 100
 
+        # MACD計算
         ema_12 = close_series.ewm(span=12, adjust=False).mean().iloc[-1]
         ema_26 = close_series.ewm(span=26, adjust=False).mean().iloc[-1]
         macd_val = ema_12 - ema_26
-        macd_signal = pd.Series(close_history[-9:]).ewm(span=9, adjust=False).mean().iloc[-1]
+        macd_history.append(macd_val)
+        macd_series = pd.Series(macd_history[-50:])
+        macd_signal = macd_series.ewm(span=9, adjust=False).mean().iloc[-1]
 
         last_known_data = np.array([[pred, sma_20, sma_50, rsi_14, macd_val, macd_signal]])
 
